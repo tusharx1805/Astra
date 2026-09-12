@@ -1,0 +1,65 @@
+import { useAuth } from "@/_core/hooks/useAuth";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { ModuleSubnav } from "@/components/ModuleSubnav";
+import { SimulatedBadge } from "@/components/SimulatedBadge";
+import { trpc } from "@/lib/trpc";
+import { applyTransformSteps, type Row, type TransformStep } from "../../../shared/transformations";
+import { ArrowDown, ArrowRight, ArrowUp, Database, Play, RefreshCw, Trash2 } from "lucide-react";
+import { useMemo, useState } from "react";
+import { toast } from "sonner";
+
+function activeWorkspaceId() {
+  return typeof window === "undefined" ? 0 : Number(localStorage.getItem("astra-active-workspace")) || 1;
+}
+
+function Header({ title, description, tabs }: { title: React.ReactNode; description: string; tabs: Array<{ label: string; href: string }> }) {
+  return <><section className="page-heading"><div><p className="eyebrow">DATA ENGINEERING · FIXTURE FLOW</p><h1>{title}</h1><p>{description}</p></div><SimulatedBadge compact /></section><ModuleSubnav tabs={tabs} /></>;
+}
+
+export function FixtureDatasetExplorer({ datasetId }: { datasetId?: string }) {
+  const { isAuthenticated } = useAuth();
+  const workspaceId = activeWorkspaceId();
+  const datasets = trpc.workspace.fixtureDatasets.useQuery({ workspaceId }, { enabled: isAuthenticated });
+  const selectedId = Number(datasetId) || datasets.data?.[0]?.id || 0;
+  const detail = trpc.workspace.fixtureDataset.useQuery({ workspaceId, datasetId: selectedId }, { enabled: Boolean(isAuthenticated && selectedId) });
+  const stats = trpc.workspace.fixtureDatasetStats.useQuery({ workspaceId, datasetId: selectedId }, { enabled: Boolean(isAuthenticated && selectedId) });
+  const rows = (detail.data?.rows ?? []) as Row[];
+  return <div className="page-stack"><Header title={<>DATASET<br /><em>EXPLORER.</em></>} description="Browse the same bounded row snapshot used by the transformation preview and manual pipeline runner." tabs={[{ label: "EXPLORER", href: "/datasets/explorer" }, { label: "CONNECTIONS", href: "/datasets/connections" }]} /><section className="panel"><div className="workspace-section-head"><div><p className="eyebrow">SNAPSHOT CATALOG</p><h2>SELECT DATASET</h2></div><span className="module-meta">{datasets.data?.length ?? 0} FIXTURES</span></div><div className="chip-row">{datasets.data?.map(dataset => <button key={dataset.id} className={dataset.id === selectedId ? "chip chip--active" : "chip"} onClick={() => { window.history.pushState({}, "", `/datasets/${dataset.id}`); window.dispatchEvent(new PopStateEvent("popstate")); }}>{dataset.name}</button>)}</div></section>{detail.isLoading ? <div className="workspace-loading"><span>LOADING SNAPSHOT…</span></div> : detail.data ? <><section className="split-grid"><section className="panel"><p className="eyebrow">SCHEMA</p><h2>{detail.data.name}</h2><p className="panel-copy">{detail.data.sourceType} · {detail.data.rows.length} rows · {detail.data.columns.length} columns</p><div className="history-list">{detail.data.columns.map(column => <div key={column.name}><span><b>{column.name}</b><small>{column.dataType} · {column.nullable ? "NULLABLE" : "REQUIRED"}</small></span><span><b>{column.uniqueValues}</b><small>DISTINCT</small></span><span><b>{column.nullPercent}%</b><small>NULL</small></span></div>)}</div></section><section className="panel"><p className="eyebrow">STATISTICS</p><h2>COMPUTED FROM ROWS</h2><div className="history-list">{stats.data?.map(stat => <div key={stat.name}><span><b>{stat.name}</b><small>{stat.dataType}</small></span><span><b>{stat.nullCount}</b><small>NULLS</small></span><span><b>{stat.distinctCount}</b><small>DISTINCT</small></span></div>)}</div></section></section><section className="panel"><div className="workspace-section-head"><div><p className="eyebrow">PREVIEW</p><h2>REAL SNAPSHOT ROWS</h2></div><span className="module-meta">CAPPED DISPLAY</span></div><div className="data-table-wrap"><table className="data-table"><thead><tr>{detail.data.columns.map(column => <th key={column.name}>{column.name}</th>)}</tr></thead><tbody>{rows.slice(0, 20).map((row, index) => <tr key={index}>{detail.data!.columns.map(column => <td key={column.name}>{String(row[column.name] ?? "∅")}</td>)}</tr>)}</tbody></table></div></section></> : null}<section className="panel"><SimulatedBadge compact /><p className="panel-copy">Development fixture mode is active. These rows are safe local snapshots; live CSV upload and PostgreSQL imports remain disabled until production connector credentials are configured.</p></section></div>;
+}
+
+function stepLabel(step: TransformStep) {
+  if (step.operation === "filter") return `Filter ${step.column} ${step.operator} ${String(step.value ?? "")}`;
+  if (step.operation === "rename_column") return `Rename ${step.from} → ${step.to}`;
+  if (step.operation === "change_datatype") return `Convert ${step.column} → ${step.toType}`;
+  if (step.operation === "drop_column") return `Drop ${step.column}`;
+  return `Remove nulls · ${step.column}`;
+}
+
+export function FixturePipelineBuilder() {
+  const { isAuthenticated } = useAuth();
+  const workspaceId = activeWorkspaceId();
+  const datasets = trpc.workspace.fixtureDatasets.useQuery({ workspaceId }, { enabled: isAuthenticated });
+  const pipelines = trpc.workspace.fixturePipelines.useQuery({ workspaceId }, { enabled: isAuthenticated });
+  const [name, setName] = useState("active customers");
+  const [sourceId, setSourceId] = useState(7001);
+  const [operation, setOperation] = useState<TransformStep["operation"]>("filter");
+  const [column, setColumn] = useState("active");
+  const [value, setValue] = useState("true");
+  const [secondColumn, setSecondColumn] = useState("customer_id");
+  const [renameTo, setRenameTo] = useState("customer_key");
+  const [datatype, setDatatype] = useState<"string" | "number" | "boolean" | "date">("number");
+  const [steps, setSteps] = useState<TransformStep[]>([]);
+  const [runResult, setRunResult] = useState<{ rowsIn: number; rowsOut: number; logs: string[]; coercionFailures: number } | null>(null);
+  const source = datasets.data?.find(dataset => dataset.id === sourceId);
+  const previewRows: Row[] = useMemo(() => source ? [{ customer_id: "C-1001", email: "ada@example.com", plan: "pro", seats: "12", active: "true" }, { customer_id: "C-1002", email: "ben@example.com", plan: "starter", seats: "4", active: "true" }, { customer_id: "C-1003", email: null, plan: "pro", seats: "8", active: "false" }, { customer_id: "C-1004", email: "drew@example.com", plan: "enterprise", seats: "41", active: "true" }] : [], [source]);
+  const preview = useMemo(() => applyTransformSteps(previewRows, steps), [previewRows, steps]);
+  const addStep = () => {
+    const next: TransformStep = operation === "filter" ? { operation, column, operator: "equals", value } : operation === "rename_column" ? { operation, from: column, to: renameTo } : operation === "change_datatype" ? { operation, column, toType: datatype } : operation === "drop_column" ? { operation, column: secondColumn } : { operation, column: secondColumn === "" ? "any" : secondColumn };
+    setSteps(current => [...current, next]);
+  };
+  const moveStep = (index: number, direction: -1 | 1) => setSteps(current => { const target = index + direction; if (target < 0 || target >= current.length) return current; const next = [...current]; [next[index], next[target]] = [next[target], next[index]]; return next; });
+  const create = trpc.workspace.createFixturePipeline.useMutation({ onSuccess: pipeline => { pipelines.refetch(); toast.success("Fixture pipeline saved", { description: "The structured Source → Transformation → Destination contract is ready for a manual run." }); run.mutate({ workspaceId, pipelineId: pipeline.id }); }, onError: error => toast.error("Pipeline could not be saved", { description: error.message }) });
+  const run = trpc.workspace.runFixturePipeline.useMutation({ onSuccess: result => { setRunResult(result); toast.success("Pipeline executed", { description: `${result.rowsIn} rows in · ${result.rowsOut} rows out · ${result.durationMs}ms` }); }, onError: error => toast.error("Pipeline run failed", { description: error.message }) });
+  return <div className="page-stack"><Header title={<>PIPELINE<br /><em>BUILDER.</em></>} description="Build a concrete Source → Transformation → Destination flow and preview the exact deterministic step behavior before a manual run." tabs={[{ label: "PIPELINES", href: "/pipelines" }, { label: "RUNS", href: "/pipeline-runs" }]} /><section className="pipeline-flow"><article><Database size={20} /><p>SOURCE</p><h3>{source?.name ?? "Select dataset"}</h3><select value={sourceId} onChange={event => setSourceId(Number(event.target.value))}>{datasets.data?.map(dataset => <option key={dataset.id} value={dataset.id}>{dataset.name}</option>)}</select></article><ArrowRight /><article><RefreshCw size={20} /><p>TRANSFORMATION</p><h3>{steps.length ? `${steps.length} ordered steps` : "Pass-through"}</h3><select value={operation} onChange={event => setOperation(event.target.value as TransformStep["operation"])}><option value="filter">Filter</option><option value="rename_column">Rename column</option><option value="change_datatype">Change datatype</option><option value="drop_column">Drop column</option><option value="remove_nulls">Remove nulls</option></select><Input value={column} onChange={event => setColumn(event.target.value)} placeholder="Column" />{operation === "filter" ? <Input value={value} onChange={event => setValue(event.target.value)} placeholder="Filter value" /> : null}{operation === "rename_column" ? <Input value={renameTo} onChange={event => setRenameTo(event.target.value)} placeholder="New column name" /> : null}{operation === "change_datatype" ? <select value={datatype} onChange={event => setDatatype(event.target.value as typeof datatype)}><option value="string">string</option><option value="number">number</option><option value="boolean">boolean</option><option value="date">date</option></select> : null}{operation === "drop_column" || operation === "remove_nulls" ? <Input value={secondColumn} onChange={event => setSecondColumn(event.target.value)} placeholder={operation === "remove_nulls" ? "Column or any" : "Column to drop"} /> : null}<Button variant="outline" onClick={addStep}>ADD STEP</Button></article><ArrowRight /><article><Database size={20} /><p>DESTINATION</p><h3>New dataset</h3><span className="module-meta">{preview.rows.length} PREVIEW ROWS</span></article></section><section className="split-grid"><section className="panel"><p className="eyebrow">ORDERED STEPS</p><h2>{steps.length} CONFIGURED</h2>{steps.length ? <div className="history-list">{steps.map((step, index) => <div key={`${step.operation}-${index}`}><span><b>{String(index + 1).padStart(2, "0")} · {stepLabel(step)}</b><small>{step.operation}</small></span><span className="step-actions"><Button variant="outline" onClick={() => moveStep(index, -1)} disabled={index === 0}><ArrowUp size={13} /></Button><Button variant="outline" onClick={() => moveStep(index, 1)} disabled={index === steps.length - 1}><ArrowDown size={13} /></Button><Button variant="outline" onClick={() => setSteps(current => current.filter((_, itemIndex) => itemIndex !== index))}><Trash2 size={13} /></Button></span></div>)}</div> : <p className="panel-copy">Add one or more structured steps. Each change updates the same preview engine used during execution.</p>}</section><section className="panel"><p className="eyebrow">PIPELINE CONTRACT</p><h2>SAVE & RUN</h2><Input value={name} onChange={event => setName(event.target.value)} placeholder="Pipeline name" /><Button className="button-red" disabled={!name.trim() || create.isPending || run.isPending} onClick={() => create.mutate({ workspaceId, name, sourceDatasetId: sourceId, destinationMode: "new_dataset", steps })}><Play size={14} /> {create.isPending || run.isPending ? "RUNNING" : "RUN PIPELINE"}</Button><p className="panel-copy">Manual only. No schedules, triggers, joins, or arbitrary code execution are enabled.</p></section></section><section className="panel"><SimulatedBadge compact /><p className="eyebrow">LIVE PREVIEW</p><h2>{preview.rows.length} ROWS OUT</h2><p className="panel-copy">{preview.effects.join(" · ") || "Pass-through copy"}{preview.coercionFailures ? ` · ${preview.coercionFailures} coercion failures` : ""}</p>{runResult ? <div className="history-list">{runResult.logs.map(log => <div key={log}><span><b>{log}</b></span></div>)}</div> : null}</section><section className="panel"><p className="eyebrow">SAVED FIXTURE PIPELINES</p>{pipelines.data?.length ? <div className="history-list">{pipelines.data.map(pipeline => <div key={pipeline.id}><span><b>{pipeline.name}</b><small>{pipeline.steps.length} steps · {pipeline.destinationMode}</small></span><Button variant="outline" onClick={() => run.mutate({ workspaceId, pipelineId: pipeline.id })}><Play size={14} /> RUN</Button></div>)}</div> : <p className="panel-copy">No fixture pipelines yet. Build one above.</p>}</section></div>;
+}
